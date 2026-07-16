@@ -1,6 +1,6 @@
 import os
 import time
-import json  # JSON obyektlərini oxumaq (parse etmək) üçün əlavə etdik
+import json
 from dotenv import load_dotenv
 from openai import OpenAI, APIError, RateLimitError, APITimeoutError
 
@@ -28,57 +28,69 @@ user_input = "I tried to log in but it keeps giving me a 500 internal server err
 def call_llm_with_retry(system_prompt, user_prompt, max_retries=3, delay=2):
     for attempt in range(1, max_retries + 1):
         try:
-            # response_format vasitəsilə OpenAI-ın mütləq JSON qaytarmasını məcbur edirik
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
-                response_format={"type": "json_object"},  # JSON rejimini aktivləşdiririk
+                response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.2,
-                stream=False  # Parsing və struktur yoxlaması üçün bu addımda axını müvəqqəti bağlayırıq
+                stream=False
             )
             return response
             
         except (RateLimitError, APITimeoutError, APIError) as e:
-            print(f"\n[Retry {attempt}/{max_retries}] API Error: {e}. Gözlənilir: {delay}s...")
+            print(f"\n[Retry {attempt}/{max_retries}] API Error: {e}. Waiting {delay}s...")
             time.sleep(delay)
         except Exception as e:
             raise e
             
-    raise Exception("Yenidən cəhd limiti aşdı.")
+    raise Exception("Failed after maximum retries.")
 
 
-print("Modeldən gələn cavab yoxlanılır...\n")
+print("Sorğu göndərilir və xərclər hesablanır...\n")
 
 try:
     response = call_llm_with_retry(system_prompt, f"User: \"{user_input}\"\nAssistant:")
     raw_content = response.choices[0].message.content
     
-    print("--- Modeldən Gələn Xam Mətn ---")
+    print("--- Modeldən Gələn Cavab ---")
     print(raw_content)
-    print("-------------------------------\n")
+    print("----------------------------\n")
     
-    # Checkpoint 5: JSON Parsing və Validasiya
+    # 5. Checkpoint: JSON Parsing və Validasiya
     try:
-        # Gələn mətni Python lüğətinə (dict) çeviririk
         parsed_json = json.loads(raw_content)
-        
-        # Tələb olunan açarların mövcudluğunu yoxlayırıq (Schema Validation)
         required_keys = ["category", "sentiment", "suggested_reply"]
         is_valid = all(key in parsed_json for key in required_keys)
         
         if is_valid:
-            print("✅ Validasiya Uğurlu: Düzgün strukturda JSON aşkar edildi!")
-            print(f"Kategoriya: {parsed_json['category'].upper()}")
-            print(f"Emosional Vəziyyət (Sentiment): {parsed_json['sentiment'].upper()}")
-            print(f"Təklif Olunan Cavab: {parsed_json['suggested_reply']}")
+            print("✅ Validasiya Uğurlu!")
         else:
-            print("❌ Validasiya Uğursuz: Bəzi tələb olunan JSON sahələri tapılmadı.")
-            
+            print("❌ Validasiya Uğursuz!")
     except json.JSONDecodeError:
-        print("❌ Validasiya Uğursuz: Gələn cavab düzgün JSON formatında deyil.")
+        print("❌ JSON Oxunarkən Xəta Baş Verdi!")
+
+    # 6. Checkpoint: Token və Xərc Hesabatı (Cost/Token Logging)
+    usage = response.usage
+    prompt_tokens = usage.prompt_tokens
+    completion_tokens = usage.completion_tokens
+    total_tokens = usage.total_tokens
+
+    # gpt-4o-mini rəsmi qiymətləri (1 milyon token üçün):
+    # Giriş (Input): $0.150 / M
+    # Çıxış (Output): $0.600 / M
+    input_cost = (prompt_tokens / 1_000_000) * 0.150
+    output_cost = (completion_tokens / 1_000_000) * 0.600
+    total_cost = input_cost + output_cost
+
+    print("\n================ TOKEN & COST REPORT ================")
+    print(f"📥 Giriş Tokenləri (Prompt Tokens): {prompt_tokens}")
+    print(f"📤 Çıxış Tokenləri (Completion Tokens): {completion_tokens}")
+    print(f"📊 Ümumi Token Sayı (Total Tokens): {total_tokens}")
+    print(f"💵 Təxmini Sorğu Qiyməti (Total Cost): ${total_cost:.8f}")
+    print("=====================================================")
 
 except Exception as e:
-    print(f"\n❌ Tətbiq xətası: {e}")
+    print(f"\n❌ Xəta baş verdi: {e}")
