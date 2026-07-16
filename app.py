@@ -1,8 +1,9 @@
 import os
+import time
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, APIError, RateLimitError, APITimeoutError
 
-# .env faylından API açarını yükləyirik
+# İnstall API key from .env
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
@@ -11,7 +12,6 @@ if not api_key:
 
 client = OpenAI(api_key=api_key)
 
-# 2. Checkpoint-dən olan Prompt-larimiz
 system_prompt = """
 You are a professional customer support assistant. Analyze the incoming user inquiry and respond strictly in the following JSON format:
 {
@@ -24,26 +24,54 @@ RULE: Do not return any introduction, explanation, markdown blocks, or extra tex
 
 user_input = "I tried to log in but it keeps giving me a 500 internal server error."
 
-print("Sending request to OpenAI with streaming enabled...\n")
 
-# 3. Checkpoint: Streaming-in reallaşdırılması (stream=True)
-response_stream = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"User: \"{user_input}\"\nAssistant:"}
-    ],
-    temperature=0.2,
-    stream=True # Cavabın axınla gəlməsini aktiv edirik
-)
+# Checkpoint 4: retry logic
+def call_llm_with_retry(system_prompt, user_prompt, max_retries=3, delay=2):
+    """
+    API xətaları, Rate limit və ya Timeout zamanı 3 cəhd edən funksiya.
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.2,
+                stream=True
+            )
+            return response
+            
+        except RateLimitError as e:
+            print(f"\n[Retry {attempt}/{max_retries}] Rate limit! Gözlənilir: {delay}s...")
+            time.sleep(delay)
+        except APITimeoutError as e:
+            print(f"\n[Retry {attempt}/{max_retries}] Timeout! Gözlənilir: {delay}s...")
+            time.sleep(delay)
+        except APIError as e:
+            print(f"\n[Retry {attempt}/{max_retries}] API Error: {e}. Gözlənilir: {delay}s...")
+            time.sleep(delay)
+        except Exception as e:
+            print(f"\n[Gözlənilməyən Xəta]: {e}")
+            raise e
+            
+    raise Exception("Yenidən cəhd limitini aşdı.")
 
-full_response_text = ""
 
-print("--- Live Stream Response ---")
-# Hər gələn simvol hissəsini (chunk) canlı olaraq ekrana yazdırırıq
-for chunk in response_stream:
-    chunk_text = chunk.choices[0].delta.content
-    if chunk_text is not None:
-        print(chunk_text, end="", flush=True)
-        full_response_text += chunk_text
-print("\n---------------------------")
+print("Sorğu göndərilir...\n")
+
+try:
+    response_stream = call_llm_with_retry(system_prompt, f"User: \"{user_input}\"\nAssistant:")
+    
+    full_response_text = ""
+    print("--- Live Stream Response ---")
+    for chunk in response_stream:
+        chunk_text = chunk.choices[0].delta.content
+        if chunk_text is not None:
+            print(chunk_text, end="", flush=True)
+            full_response_text += chunk_text
+    print("\n---------------------------")
+    
+except Exception as e:
+    print(f"\n❌ Proqram işləmədi: {e}")
